@@ -10,7 +10,7 @@
   .container { max-width: 900px; margin: 0 auto; }
   label { display:block; margin:10px 0 6px; font-weight:600 }
   input[type="text"], textarea, select { width:100%; box-sizing:border-box; padding:8px; font-size:14px; border:1px solid #ccc; border-radius:6px }
-  textarea { min-height:180px; font-family: monospace; white-space: pre-wrap; }
+  textarea { min-height:180px; font-family: monospace; white-space: pre; }
   button { margin-top:10px; padding:10px 14px; font-weight:600; border-radius:8px; border:1px solid #2b6cb0; background:#2b6cb0; color:white; cursor:pointer }
   button.secondary { background: #eee; color:#111; border-color:#aaa }
   .row { display:flex; gap:8px; margin-top:8px }
@@ -23,19 +23,22 @@
   .note { background:#fff8c6; padding:10px; border-radius:8px; margin-top:10px; border:1px solid #f1e28a; }
   footer { margin-top:18px; font-size:13px; color:#666 }
   .flex-between { display:flex; justify-content:space-between; align-items:center; gap:10px }
-  .copy-btn { margin-left:8px; padding:6px 8px; border-radius:6px; border:1px solid #888; background:#fff; cursor:pointer }
+  .copy-btn { margin-left:8px; padding:6px 10px; border-radius:6px; border:1px solid #888; background:#fff; color:#111; cursor:pointer }
+  .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center }
+  .pill { display:inline-block; padding:2px 8px; border:1px solid #ddd; border-radius:999px; background:#fff; font-family:monospace; }
+  #all-ips { min-height: 90px; }
 </style>
 </head>
 <body>
   <div class="container">
     <h1>Article IP IOC Extractor</h1>
-    <p class="small">Paste a URL to fetch an article and extract IPv4 IOCs. Handles common defanging like <code>1[.]2[.]3[.]4</code>, <code>1 dot 2 dot 3 dot 4</code>, <code>(.)</code>, etc. If a fetch fails due to CORS, try the <strong>Use CORS proxies</strong> fallback or paste the article text directly.</p>
+    <p class="small">Paste a URL to fetch an article and extract IPv4 IOCs (handles defanging like <code>1[.]2[.]3[.]4</code>, <code>dot</code>, <code>(.)</code>, etc.).</p>
 
     <label for="url">Article URL</label>
     <input id="url" type="text" inputmode="url" placeholder="https://example.com/news/article.html" />
 
     <div class="row">
-      <button id="fetchBtn" type="button">Fetch & Extract</button>
+      <button id="fetchBtn" type="button">Fetch &amp; Extract</button>
       <button id="pasteBtn" type="button" class="secondary">Paste article HTML/text instead</button>
     </div>
 
@@ -43,7 +46,7 @@
       <input id="useProxies" type="checkbox" checked /> Use CORS proxies if direct fetch fails
     </label>
     <div class="note">
-      <strong>Proxy fallback:</strong> the tool may try public proxies <code>api.allorigins.win</code> and <code>cors.bridged.cc</code> if direct fetch fails. Public proxies are convenient but may be rate-limited or unavailable. For reliable results, host your own tiny proxy.
+      <strong>Proxy fallback:</strong> uses public proxies if direct fetch fails. For reliability, host your own tiny proxy.
     </div>
 
     <label for="manualText">Article HTML / Text (optional — paste if fetch fails)</label>
@@ -57,50 +60,47 @@
     <div class="results">
       <div class="flex-between">
         <h2 id="resultsTitle">Results</h2>
-        <div>
-          <button id="copyAll" type="button" class="copy-btn">Copy all IPs</button>
-          <button id="downloadCsv" type="button" class="copy-btn">Download CSV</button>
+        <div class="toolbar">
+          <button id="copyAll" type="button" class="copy-btn" title="Copy unique IP list" aria-label="Copy unique IP list">📋 Copy all IPs</button>
+          <button id="downloadCsv" type="button" class="copy-btn" title="Download CSV for the consolidated list" aria-label="Download CSV for the consolidated list">⬇️ Download CSV</button>
         </div>
       </div>
       <div id="summary" class="small">No results yet.</div>
+
+      <!-- Consolidated list -->
+      <div id="consolidated" style="display:none; margin-top:8px;">
+        <label for="all-ips">All unique IPs (one per line)</label>
+        <textarea id="all-ips" readonly></textarea>
+        <div class="small">Tip: Use the buttons above to copy or download this list.</div>
+      </div>
+
+      <!-- Individual cards -->
+      <h3 id="cardsHeader" style="display:none; margin-top:18px;">Individual IP details</h3>
       <div id="list"></div>
     </div>
 
     <footer>
-      Tip: If a site blocks cross-origin requests, paste the article HTML into the textarea and click <em>Extract from Pasted Text</em>. This tool finds IPv4 addresses and common obfuscated variants and shows surrounding text context.
+      Tip: If a site blocks cross-origin requests, paste the article HTML into the textarea and click <em>Extract from Pasted Text</em>.
     </footer>
   </div>
 
 <script>
-/* =========================
-   Regex & normalization
-   ========================= */
-
-// IPv4 octet strict pattern
+/* ===== Regex & normalization ===== */
 const OCTET = '(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)';
-
-// Separator pattern that matches obfuscations (dot, [.] , (.) , dot words)
 const SEP = `(?:\\s*(?:\\.|\\[\\s*\\.?\\s*\\]|\\(\\s*\\.?\\s*\\)|\\[\\s*dot\\s*\\]|\\(\\s*dot\\s*\\)|dot)\\s*)`;
-
-// Full IPv4 regex (used after normalization / on clean text)
 const IPV4_RE = new RegExp(`\\b${OCTET}(?:${SEP}${OCTET}){3}\\b`, 'ig');
-
-// Candidate pattern to capture obfuscated groups then normalize
 const RAW_SEP = '(?:\\.|\\[\\s*\\.?\\s*\\]|\\(\\s*\\.?\\s*\\)|\\[\\s*dot\\s*\\]|\\(\\s*dot\\s*\\)|dot|\\s*\\[\\s*\\]\\s*)';
 const RAW_IP_CAND_RE = new RegExp(`\\b(\\d{1,3})(?:${RAW_SEP})(\\d{1,3})(?:${RAW_SEP})(\\d{1,3})(?:${RAW_SEP})(\\d{1,3})\\b`, 'ig');
 
-// Normalize defanged separators to a real dot
 function normalizeDefanged(text) {
   return text
-    .replace(/\[\s*\.?\s*\]/gi, '.')   // [.] or [] (rare) -> .
-    .replace(/\(\s*\.?\s*\)/gi, '.')   // (.) -> .
-    .replace(/\[\s*dot\s*\]/gi, '.')   // [dot] -> .
-    .replace(/\(\s*dot\s*\)/gi, '.')   // (dot) -> .
-    .replace(/\bdot\b/gi, '.')         // dot word -> .
-    .replace(/ ?\uFF0E ?/g, '.');      // fullwidth dot -> .
+    .replace(/\[\s*\.?\s*\]/gi, '.')
+    .replace(/\(\s*\.?\s*\)/gi, '.')
+    .replace(/\[\s*dot\s*\]/gi, '.')
+    .replace(/\(\s*dot\s*\)/gi, '.')
+    .replace(/\bdot\b/gi, '.')
+    .replace(/ ?\uFF0E ?/g, '.');
 }
-
-// Validate normalized IP (0-255)
 function validIpFromParts(a,b,c,d) {
   const nums = [a,b,c,d].map(s => parseInt(s,10));
   if (nums.some(n => Number.isNaN(n))) return null;
@@ -108,49 +108,27 @@ function validIpFromParts(a,b,c,d) {
   return null;
 }
 
-/* =========================
-   Text extraction utilities
-   ========================= */
-
-// Try to extract visible text from HTML, removing scripts/styles and some chrome.
+/* ===== Text extraction ===== */
 function extractVisibleText(html) {
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
-
-    // Drop noisy nodes
     doc.querySelectorAll('script, style, noscript, svg, header, footer, nav').forEach(n => n.remove());
-
-    // Prefer article/main if present
     const root = doc.querySelector('article, main') || doc.body || doc.documentElement;
-
-    // Decode entities via a temporary element
     const tmp = document.createElement('textarea');
     tmp.innerHTML = root.textContent || '';
     let text = tmp.value;
-
-    // Normalize whitespace & line endings
     text = text.replace(/\r\n/g, '\n').replace(/\u00A0/g, ' ');
     return text;
-  } catch {
-    // If DOMParser fails, return original string
-    return html;
-  }
+  } catch { return html; }
 }
 
-/* =========================
-   Extraction pipeline
-   ========================= */
-
+/* ===== Extraction pipeline ===== */
 function extractIpsFromText(rawInput) {
-  const rawText = String(rawInput ?? '');
-  const results = new Map(); // ip -> {ip,count,contexts:[]}
-
-  // Normalize line endings (bugfix: assign back)
-  const lnText = rawText.replace(/\r\n/g, '\n');
-
-  // Strategy 1: scan candidates in raw text (handles obfuscations & context)
+  const lnText = String(rawInput ?? '').replace(/\r\n/g, '\n');
+  const results = new Map();
   let m;
+
   while ((m = RAW_IP_CAND_RE.exec(lnText)) !== null) {
     const fullMatch = m[0];
     const start = Math.max(0, m.index - 80);
@@ -169,93 +147,66 @@ function extractIpsFromText(rawInput) {
     item.contexts.push({ rawMatch: fullMatch, contextText: context });
   }
 
-  // Strategy 2: parse HTML -> visible text, normalize defanging, then run strict IPv4 on that
   const visible = extractVisibleText(rawInput);
   const normalizedWhole = normalizeDefanged(visible);
   while ((m = IPV4_RE.exec(normalizedWhole)) !== null) {
-    const ipCandidate = m[0];
-    // m[0] already respects octet bounds via OCTET
-    if (!results.has(ipCandidate)) results.set(ipCandidate, { ip: ipCandidate, count: 0, contexts: [] });
-    const item = results.get(ipCandidate);
+    const ip = m[0];
+    if (!results.has(ip)) results.set(ip, { ip, count: 0, contexts: [] });
+    const item = results.get(ip);
     item.count += 1;
     const start = Math.max(0, m.index - 80);
-    const end = Math.min(normalizedWhole.length, m.index + ipCandidate.length + 80);
-    item.contexts.push({ rawMatch: ipCandidate, contextText: normalizedWhole.slice(start, end).trim() });
+    const end = Math.min(normalizedWhole.length, m.index + ip.length + 80);
+    item.contexts.push({ rawMatch: ip, contextText: normalizedWhole.slice(start, end).trim() });
   }
 
-  // Dedupe contexts and sort by count desc, then IP asc
   const arr = Array.from(results.values()).map(v => {
     const seen = new Set();
     v.contexts = v.contexts.filter(c => {
-      const key = c.contextText;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      if (seen.has(c.contextText)) return false;
+      seen.add(c.contextText);
       return true;
     });
     return v;
-  }).sort((a,b) => (b.count - a.count) || (a.ip.localeCompare(b.ip)));
+  }).sort((a,b) => (b.count - a.count) || a.ip.localeCompare(b.ip));
 
   return arr;
 }
 
-/* =========================
-   Fetch with proxy fallback
-   ========================= */
-
+/* ===== Fetch + fallback ===== */
 const PROXIES = [
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://cors.bridged.cc/${url}`
 ];
-
-// Simple URL sanity check
 function looksLikeHttpUrl(s) {
-  try {
-    const u = new URL(s);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch { return false; }
+  try { const u = new URL(s); return u.protocol === 'http:' || u.protocol === 'https:'; }
+  catch { return false; }
 }
-
-// Fetch with per-attempt timeout
 async function fetchWithTimeout(resource, options = {}, ms = 12000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
-  try {
-    const resp = await fetch(resource, { ...options, signal: controller.signal, redirect: 'follow' });
-    return resp;
-  } finally {
-    clearTimeout(id);
-  }
+  try { return await fetch(resource, { ...options, signal: controller.signal, redirect: 'follow' }); }
+  finally { clearTimeout(id); }
 }
-
 async function fetchWithFallback(url, useProxies = true) {
-  // 1) direct
   try {
     const r = await fetchWithTimeout(url, { method: 'GET' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const txt = await r.text();
-    return { text: txt, source: 'direct' };
+    return { text: await r.text(), source: 'direct' };
   } catch (err) {
     if (!useProxies) throw err;
-    // 2) proxies
     for (const makeProxy of PROXIES) {
       const purl = makeProxy(url);
       try {
         const r = await fetchWithTimeout(purl, { method: 'GET' }, 15000);
         if (!r.ok) throw new Error(`Proxy HTTP ${r.status}`);
-        const txt = await r.text();
-        return { text: txt, source: purl };
-      } catch (err2) {
-        console.warn('Proxy attempt failed:', err2);
-      }
+        return { text: await r.text(), source: purl };
+      } catch (err2) { console.warn('Proxy attempt failed:', err2); }
     }
     throw new Error('Fetch failed (direct + proxies).');
   }
 }
 
-/* =========================
-   UI wiring
-   ========================= */
-
+/* ===== UI wiring ===== */
 const urlInput = document.getElementById('url');
 const fetchBtn = document.getElementById('fetchBtn');
 const pasteBtn = document.getElementById('pasteBtn');
@@ -268,6 +219,10 @@ const useProxiesCheckbox = document.getElementById('useProxies');
 const copyAllBtn = document.getElementById('copyAll');
 const downloadCsvBtn = document.getElementById('downloadCsv');
 
+const consolidatedBox = document.getElementById('consolidated');
+const allIpsTextarea = document.getElementById('all-ips');
+const cardsHeader = document.getElementById('cardsHeader');
+
 fetchBtn.addEventListener('click', async () => {
   const url = urlInput.value.trim();
   if (!url) { alert('Please paste an article URL (or paste the article HTML into the textarea).'); return; }
@@ -275,6 +230,9 @@ fetchBtn.addEventListener('click', async () => {
 
   summary.textContent = 'Fetching…';
   list.innerHTML = '';
+  consolidatedBox.style.display = 'none';
+  cardsHeader.style.display = 'none';
+
   try {
     const useProxies = useProxiesCheckbox.checked;
     const res = await fetchWithFallback(url, useProxies);
@@ -287,13 +245,14 @@ fetchBtn.addEventListener('click', async () => {
   }
 });
 
-pasteBtn.addEventListener('click', () => {
-  manualText.focus();
-});
+pasteBtn.addEventListener('click', () => manualText.focus());
 
 extractFromText.addEventListener('click', () => {
   const text = manualText.value || '';
   if (!text.trim()) { alert('Paste article HTML or text into the textarea first.'); return; }
+  list.innerHTML = '';
+  consolidatedBox.style.display = 'none';
+  cardsHeader.style.display = 'none';
   const ips = extractIpsFromText(text);
   displayResults(ips, '(pasted)', 'pasted');
 });
@@ -302,18 +261,33 @@ clearBtn.addEventListener('click', () => {
   urlInput.value = '';
   manualText.value = '';
   list.innerHTML = '';
+  allIpsTextarea.value = '';
+  consolidatedBox.style.display = 'none';
+  cardsHeader.style.display = 'none';
   summary.textContent = 'No results yet.';
 });
 
+/* ===== Results rendering ===== */
 function displayResults(arr, sourceUrl, sourceLabel) {
   list.innerHTML = '';
   const src = sourceLabel || sourceUrl || 'unknown';
+
   if (!arr || arr.length === 0) {
     summary.textContent = `No IPs found (source: ${src}).`;
+    consolidatedBox.style.display = 'none';
+    cardsHeader.style.display = 'none';
     return;
   }
-  summary.textContent = `${arr.length} unique IP(s) found (source: ${src}).`;
 
+  // consolidated list
+  const uniqueIps = arr.map(x => x.ip);
+  allIpsTextarea.value = uniqueIps.join('\n');
+  consolidatedBox.style.display = '';
+  cardsHeader.style.display = '';
+
+  summary.textContent = `${uniqueIps.length} unique IP(s) found (source: ${src}).`;
+
+  // Cards
   arr.forEach(item => {
     const card = document.createElement('div');
     card.className = 'ipcard';
@@ -323,40 +297,50 @@ function displayResults(arr, sourceUrl, sourceLabel) {
     const strong = document.createElement('strong');
     strong.textContent = item.ip;
     header.appendChild(strong);
-    const occ = document.createTextNode(` — occurrences: ${item.count}`);
-    header.appendChild(occ);
+    header.appendChild(document.createTextNode(` — occurrences: ${item.count}`));
+    card.appendChild(header);
 
     const controls = document.createElement('div');
     controls.style.marginTop = '8px';
     controls.className = 'small';
 
+    // Marked, labeled buttons
     const copyBtn = document.createElement('button');
-    copyBtn.textContent = 'Copy IP';
+    copyBtn.type = 'button';
+    copyBtn.textContent = '📋 Copy IP';
     copyBtn.className = 'copy-btn';
+    copyBtn.title = 'Copy this IP to clipboard';
+    copyBtn.setAttribute('aria-label', `Copy ${item.ip} to clipboard`);
     copyBtn.addEventListener('click', () => navigator.clipboard.writeText(item.ip).catch(() => {}));
 
-    const whoisBtn = document.createElement('button');
-    whoisBtn.textContent = 'Lookup (IP info)';
-    whoisBtn.className = 'copy-btn';
-    whoisBtn.addEventListener('click', () => {
-      // Open both a general info page and (optionally) ARIN if desired
-      window.open(`https://ipinfo.io/${item.ip}`, '_blank', 'noopener');
-    });
+    const ipinfoBtn = document.createElement('button');
+    ipinfoBtn.type = 'button';
+    ipinfoBtn.textContent = '🔎 Open ipinfo.io';
+    ipinfoBtn.className = 'copy-btn';
+    ipinfoBtn.title = 'Open ipinfo.io for this IP';
+    ipinfoBtn.setAttribute('aria-label', `Open ipinfo.io for ${item.ip}`);
+    ipinfoBtn.addEventListener('click', () => window.open(`https://ipinfo.io/${item.ip}`, '_blank', 'noopener'));
+
+    const arinBtn = document.createElement('button');
+    arinBtn.type = 'button';
+    arinBtn.textContent = '📡 Open ARIN Whois';
+    arinBtn.className = 'copy-btn';
+    arinBtn.title = 'Open ARIN Whois for this IP';
+    arinBtn.setAttribute('aria-label', `Open ARIN Whois for ${item.ip}`);
+    arinBtn.addEventListener('click', () => window.open(`https://search.arin.net/rdap/?query=${item.ip}`, '_blank', 'noopener'));
 
     controls.appendChild(copyBtn);
-    controls.appendChild(whoisBtn);
-
-    card.appendChild(header);
+    controls.appendChild(ipinfoBtn);
+    controls.appendChild(arinBtn);
     card.appendChild(controls);
 
-    // Show up to 3 contexts
+    // Contexts (up to 3)
     const maxCtx = Math.min(3, item.contexts.length);
     for (let i = 0; i < maxCtx; i++) {
       const c = item.contexts[i];
       const ctxDiv = document.createElement('div');
       ctxDiv.className = 'context';
-      const highlighted = highlightMatch(c.contextText, c.rawMatch);
-      ctxDiv.innerHTML = highlighted;
+      ctxDiv.innerHTML = highlightMatch(c.contextText, c.rawMatch);
       card.appendChild(ctxDiv);
     }
 
@@ -364,17 +348,13 @@ function displayResults(arr, sourceUrl, sourceLabel) {
   });
 }
 
-// Escape minimal HTML entities
+/* ===== Helpers ===== */
 function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-
-// Try to highlight the matched IP (handles obfuscated vs normalized)
 function highlightMatch(contextText, rawMatch) {
   const escaped = escapeHtml(contextText);
   const normMatch = escapeHtml(normalizeDefanged(rawMatch));
-
-  // Try exact raw
   const rawEsc = escapeHtml(rawMatch);
   let idx = escaped.toLowerCase().indexOf(rawEsc.toLowerCase());
   if (idx >= 0) {
@@ -383,8 +363,6 @@ function highlightMatch(contextText, rawMatch) {
       escaped.slice(idx, idx + rawEsc.length) +
       '</mark>' + escaped.slice(idx + rawEsc.length);
   }
-
-  // Try normalized
   idx = escaped.toLowerCase().indexOf(normMatch.toLowerCase());
   if (idx >= 0) {
     return escaped.slice(0, idx) +
@@ -392,45 +370,29 @@ function highlightMatch(contextText, rawMatch) {
       escaped.slice(idx, idx + normMatch.length) +
       '</mark>' + escaped.slice(idx + normMatch.length);
   }
-
-  // Fallback: highlight first IP-ish sequence
   return escaped.replace(/(\d{1,3}(?:[.\[\]\(\)\s]*?(?:dot)?[.\[\]\(\)\s]*\d{1,3}){3})/i,
     '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">$1</mark>');
 }
 
-// Copy all IPs (deduped)
+/* ===== Consolidated list actions ===== */
 copyAllBtn.addEventListener('click', async () => {
-  const ips = Array.from(document.querySelectorAll('.ipcard > .meta > strong'))
-    .map(el => el.textContent.trim());
-  const unique = Array.from(new Set(ips));
-  if (unique.length === 0) { alert('No IPs to copy'); return; }
+  const text = allIpsTextarea.value.trim();
+  if (!text) { alert('No IPs to copy'); return; }
   try {
-    await navigator.clipboard.writeText(unique.join('\n'));
-    alert('Copied ' + unique.length + ' IP(s) to clipboard.');
-  } catch (err) {
-    alert('Clipboard copy failed. Here are the IPs:\n\n' + unique.join('\n'));
+    await navigator.clipboard.writeText(text);
+    alert('Copied IP list to clipboard.');
+  } catch {
+    alert('Clipboard failed. Here are the IPs:\n\n' + text);
   }
 });
 
-// Download CSV
 downloadCsvBtn.addEventListener('click', () => {
-  const cards = document.querySelectorAll('.ipcard');
-  if (cards.length === 0) { alert('No results to download'); return; }
-
-  const rows = ['ip,occurrences,contexts'];
-  Array.from(cards).forEach(card => {
-    const ip = card.querySelector('.meta strong').textContent.trim();
-    const occText = card.querySelector('.meta').textContent;
-    const occMatch = occText.match(/occurrences:\s*(\d+)/i);
-    const occ = occMatch ? occMatch[1] : '0';
-    const ctxs = Array.from(card.querySelectorAll('.context'))
-      .map(c => c.textContent.replace(/\s+/g,' ').trim().slice(0,200))
-      .join(' | ');
-    rows.push(`"${ip.replace(/"/g,'""')}",${occ},"${ctxs.replace(/"/g,'""')}"`);
-  });
-
+  const text = allIpsTextarea.value.trim();
+  if (!text) { alert('No results to download'); return; }
+  const rows = ['ip'];
+  text.split('\n').forEach(ip => rows.push(`"${ip.replace(/"/g,'""')}"`));
   const csv = rows.join('\n');
-  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
