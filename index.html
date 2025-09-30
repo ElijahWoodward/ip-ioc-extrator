@@ -24,7 +24,6 @@
   footer { margin-top:18px; font-size:13px; color:#666 }
   .flex-between { display:flex; justify-content:space-between; align-items:center; gap:10px }
   .copy-btn { margin-left:8px; padding:6px 8px; border-radius:6px; border:1px solid #888; background:#fff; cursor:pointer }
-  .download { float:right }
 </style>
 </head>
 <body>
@@ -33,32 +32,34 @@
     <p class="small">Paste a URL to fetch an article and extract IPv4 IOCs. Handles common defanging like <code>1[.]2[.]3[.]4</code>, <code>1 dot 2 dot 3 dot 4</code>, <code>(.)</code>, etc. If a fetch fails due to CORS, try the <strong>Use CORS proxies</strong> fallback or paste the article text directly.</p>
 
     <label for="url">Article URL</label>
-    <input id="url" type="text" placeholder="https://example.com/news/article.html" />
+    <input id="url" type="text" inputmode="url" placeholder="https://example.com/news/article.html" />
 
     <div class="row">
-      <button id="fetchBtn">Fetch & Extract</button>
-      <button id="pasteBtn" class="secondary">Paste article HTML/text instead</button>
+      <button id="fetchBtn" type="button">Fetch & Extract</button>
+      <button id="pasteBtn" type="button" class="secondary">Paste article HTML/text instead</button>
     </div>
 
-    <label for="useProxies" style="margin-top:12px"><input id="useProxies" type="checkbox" checked /> Use CORS proxies if direct fetch fails</label>
+    <label for="useProxies" style="margin-top:12px">
+      <input id="useProxies" type="checkbox" checked /> Use CORS proxies if direct fetch fails
+    </label>
     <div class="note">
-      <strong>Proxy fallback:</strong> the tool will try the public proxies <code>api.allorigins.win</code> and <code>cors.bridged.cc</code> if direct fetch fails. Public proxies are convenient but may be rate-limited or unavailable. For reliable results host a small proxy (e.g. <code>cors-anywhere</code> or a tiny cloud function).
+      <strong>Proxy fallback:</strong> the tool may try public proxies <code>api.allorigins.win</code> and <code>cors.bridged.cc</code> if direct fetch fails. Public proxies are convenient but may be rate-limited or unavailable. For reliable results, host your own tiny proxy.
     </div>
 
     <label for="manualText">Article HTML / Text (optional — paste if fetch fails)</label>
     <textarea id="manualText" placeholder="Paste article HTML or plain text here (you can paste the whole page)."></textarea>
 
     <div class="row">
-      <button id="extractFromText">Extract from Pasted Text</button>
-      <button id="clearBtn" class="secondary">Clear</button>
+      <button id="extractFromText" type="button">Extract from Pasted Text</button>
+      <button id="clearBtn" type="button" class="secondary">Clear</button>
     </div>
 
     <div class="results">
       <div class="flex-between">
         <h2 id="resultsTitle">Results</h2>
         <div>
-          <button id="copyAll" class="copy-btn">Copy all IPs</button>
-          <button id="downloadCsv" class="copy-btn">Download CSV</button>
+          <button id="copyAll" type="button" class="copy-btn">Copy all IPs</button>
+          <button id="downloadCsv" type="button" class="copy-btn">Download CSV</button>
         </div>
       </div>
       <div id="summary" class="small">No results yet.</div>
@@ -71,40 +72,35 @@
   </div>
 
 <script>
-// --- Regex & normalization logic ---
+/* =========================
+   Regex & normalization
+   ========================= */
 
 // IPv4 octet strict pattern
 const OCTET = '(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)';
 
-// Separator pattern that matches:
-// .    or  [.]  or  (.)  or  [ dot ] or ( dot ) or dot  with optional whitespace
+// Separator pattern that matches obfuscations (dot, [.] , (.) , dot words)
 const SEP = `(?:\\s*(?:\\.|\\[\\s*\\.?\\s*\\]|\\(\\s*\\.?\\s*\\)|\\[\\s*dot\\s*\\]|\\(\\s*dot\\s*\\)|dot)\\s*)`;
 
-// Full IPv4 regex (used after normalization for final match, but we'll also run against raw text to capture obfuscated forms)
+// Full IPv4 regex (used after normalization / on clean text)
 const IPV4_RE = new RegExp(`\\b${OCTET}(?:${SEP}${OCTET}){3}\\b`, 'ig');
 
-// Additional "raw" pattern to match dotted and partially obfuscated variants to capture context and later normalize
-// We'll search for things that look like 4 groups of 1-3 digits separated by ., [.] , (.) , dot, etc.
+// Candidate pattern to capture obfuscated groups then normalize
 const RAW_SEP = '(?:\\.|\\[\\s*\\.?\\s*\\]|\\(\\s*\\.?\\s*\\)|\\[\\s*dot\\s*\\]|\\(\\s*dot\\s*\\)|dot|\\s*\\[\\s*\\]\\s*)';
 const RAW_IP_CAND_RE = new RegExp(`\\b(\\d{1,3})(?:${RAW_SEP})(\\d{1,3})(?:${RAW_SEP})(\\d{1,3})(?:${RAW_SEP})(\\d{1,3})\\b`, 'ig');
 
-// normalization: replace obfuscated separators with real dot
+// Normalize defanged separators to a real dot
 function normalizeDefanged(text) {
-  // Replace common bracketed/parenthesized dot forms with a real dot
-  // Patterns: [.]  (.)  [ . ]  ( . )  [dot]  (dot)  dot  with weird spacing
   return text
-    .replace(/\[\s*\.?\s*\]/gi, '.')
-    .replace(/\(\s*\.?\s*\)/gi, '.')
-    .replace(/\[\s*dot\s*\]/gi, '.')
-    .replace(/\(\s*dot\s*\)/gi, '.')
-    // standalone ' dot ' (word) -> .
-    .replace(/\bdot\b/gi, '.')
-    // weird mixes: ( . ) with spaces etc already handled, and stray spaced dots
-    .replace(/ ?\uFF0E ?/g, '.') // fullwidth dot
-    ;
+    .replace(/\[\s*\.?\s*\]/gi, '.')   // [.] or [] (rare) -> .
+    .replace(/\(\s*\.?\s*\)/gi, '.')   // (.) -> .
+    .replace(/\[\s*dot\s*\]/gi, '.')   // [dot] -> .
+    .replace(/\(\s*dot\s*\)/gi, '.')   // (dot) -> .
+    .replace(/\bdot\b/gi, '.')         // dot word -> .
+    .replace(/ ?\uFF0E ?/g, '.');      // fullwidth dot -> .
 }
 
-// Validate normalized IP (0-255 per octet)
+// Validate normalized IP (0-255)
 function validIpFromParts(a,b,c,d) {
   const nums = [a,b,c,d].map(s => parseInt(s,10));
   if (nums.some(n => Number.isNaN(n))) return null;
@@ -112,101 +108,154 @@ function validIpFromParts(a,b,c,d) {
   return null;
 }
 
-// Extract candidates and contexts from raw text
-function extractIpsFromText(rawText) {
-  const results = new Map(); // ip -> {count, contexts: []}
-  // First strategy: search for candidate patterns (handles obfuscated forms)
-  // We'll iterate RAW_IP_CAND_RE and for each candidate, normalize surrounding substring and validate.
-  rawText.replace(/\r\n/g, '\n'); // normalize line endings
-  let m;
-  while ((m = RAW_IP_CAND_RE.exec(rawText)) !== null) {
-    const fullMatch = m[0];
-    // collect context window (80 chars either side)
-    const start = Math.max(0, m.index - 80);
-    const end = Math.min(rawText.length, m.index + fullMatch.length + 80);
-    const context = rawText.slice(start, end).trim();
+/* =========================
+   Text extraction utilities
+   ========================= */
 
-    // Normalize separators inside the candidate (in case it's like "155[.]2[.]190[.]197")
+// Try to extract visible text from HTML, removing scripts/styles and some chrome.
+function extractVisibleText(html) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // Drop noisy nodes
+    doc.querySelectorAll('script, style, noscript, svg, header, footer, nav').forEach(n => n.remove());
+
+    // Prefer article/main if present
+    const root = doc.querySelector('article, main') || doc.body || doc.documentElement;
+
+    // Decode entities via a temporary element
+    const tmp = document.createElement('textarea');
+    tmp.innerHTML = root.textContent || '';
+    let text = tmp.value;
+
+    // Normalize whitespace & line endings
+    text = text.replace(/\r\n/g, '\n').replace(/\u00A0/g, ' ');
+    return text;
+  } catch {
+    // If DOMParser fails, return original string
+    return html;
+  }
+}
+
+/* =========================
+   Extraction pipeline
+   ========================= */
+
+function extractIpsFromText(rawInput) {
+  const rawText = String(rawInput ?? '');
+  const results = new Map(); // ip -> {ip,count,contexts:[]}
+
+  // Normalize line endings (bugfix: assign back)
+  const lnText = rawText.replace(/\r\n/g, '\n');
+
+  // Strategy 1: scan candidates in raw text (handles obfuscations & context)
+  let m;
+  while ((m = RAW_IP_CAND_RE.exec(lnText)) !== null) {
+    const fullMatch = m[0];
+    const start = Math.max(0, m.index - 80);
+    const end = Math.min(lnText.length, m.index + fullMatch.length + 80);
+    const context = lnText.slice(start, end).trim();
+
     const normalized = normalizeDefanged(fullMatch);
-    // now split on '.' and validate
     const parts = normalized.split('.');
     if (parts.length !== 4) continue;
     const ip = validIpFromParts(parts[0], parts[1], parts[2], parts[3]);
     if (!ip) continue;
 
-    const key = ip;
-    if (!results.has(key)) results.set(key, { ip: key, count: 0, contexts: [] });
-    const item = results.get(key);
-    item.count += 1;
-    // Keep a short snippet showing the exact matched text emphasized
-    // We'll highlight the matched part inside context on display rather than store html here
-    item.contexts.push({ rawMatch: fullMatch, contextText: context, indexInContext: m.index - start });
-  }
-
-  // Second strategy: also run direct normalized match across the whole text to catch well-formed ones we missed
-  const normalizedWhole = normalizeDefanged(rawText);
-  while ((m = IPV4_RE.exec(normalizedWhole)) !== null) {
-    const ip = m[0];
-    // ensure it's a valid ip (pattern already enforces octet ranges)
     if (!results.has(ip)) results.set(ip, { ip, count: 0, contexts: [] });
     const item = results.get(ip);
     item.count += 1;
-    const start = Math.max(0, m.index - 80);
-    const end = Math.min(normalizedWhole.length, m.index + ip.length + 80);
-    item.contexts.push({ rawMatch: ip, contextText: normalizedWhole.slice(start, end).trim(), indexInContext: m.index - start });
+    item.contexts.push({ rawMatch: fullMatch, contextText: context });
   }
 
-  // Convert map to array, sort by count desc
+  // Strategy 2: parse HTML -> visible text, normalize defanging, then run strict IPv4 on that
+  const visible = extractVisibleText(rawInput);
+  const normalizedWhole = normalizeDefanged(visible);
+  while ((m = IPV4_RE.exec(normalizedWhole)) !== null) {
+    const ipCandidate = m[0];
+    // m[0] already respects octet bounds via OCTET
+    if (!results.has(ipCandidate)) results.set(ipCandidate, { ip: ipCandidate, count: 0, contexts: [] });
+    const item = results.get(ipCandidate);
+    item.count += 1;
+    const start = Math.max(0, m.index - 80);
+    const end = Math.min(normalizedWhole.length, m.index + ipCandidate.length + 80);
+    item.contexts.push({ rawMatch: ipCandidate, contextText: normalizedWhole.slice(start, end).trim() });
+  }
+
+  // Dedupe contexts and sort by count desc, then IP asc
   const arr = Array.from(results.values()).map(v => {
-    // dedupe contexts (by exact contextText)
     const seen = new Set();
     v.contexts = v.contexts.filter(c => {
-      if (seen.has(c.contextText)) return false;
-      seen.add(c.contextText);
+      const key = c.contextText;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
     return v;
-  }).sort((a,b) => b.count - a.count);
+  }).sort((a,b) => (b.count - a.count) || (a.ip.localeCompare(b.ip)));
 
   return arr;
 }
 
-// --- Fetch logic with CORS proxy fallbacks ---
-// Public proxies (useful as fallback; replace with your own for production)
+/* =========================
+   Fetch with proxy fallback
+   ========================= */
+
 const PROXIES = [
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://cors.bridged.cc/${url}`
 ];
 
-// try fetching URL; returns text or throws
-async function fetchWithFallback(url, useProxies=true) {
-  // 1) try direct fetch
+// Simple URL sanity check
+function looksLikeHttpUrl(s) {
   try {
-    const r = await fetch(url, { method: 'GET', redirect: 'follow' });
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch { return false; }
+}
+
+// Fetch with per-attempt timeout
+async function fetchWithTimeout(resource, options = {}, ms = 12000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  try {
+    const resp = await fetch(resource, { ...options, signal: controller.signal, redirect: 'follow' });
+    return resp;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function fetchWithFallback(url, useProxies = true) {
+  // 1) direct
+  try {
+    const r = await fetchWithTimeout(url, { method: 'GET' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const txt = await r.text();
     return { text: txt, source: 'direct' };
   } catch (err) {
-    // direct fetch failed. Try proxies if allowed.
     if (!useProxies) throw err;
+    // 2) proxies
     for (const makeProxy of PROXIES) {
       const purl = makeProxy(url);
       try {
-        const r = await fetch(purl, { method: 'GET', redirect: 'follow' });
-        if (!r.ok) throw new Error(`Proxy HTTP ${r.status} from ${purl}`);
+        const r = await fetchWithTimeout(purl, { method: 'GET' }, 15000);
+        if (!r.ok) throw new Error(`Proxy HTTP ${r.status}`);
         const txt = await r.text();
         return { text: txt, source: purl };
       } catch (err2) {
-        // continue to next proxy
         console.warn('Proxy attempt failed:', err2);
       }
     }
-    // final failure
-    throw new Error('Fetch failed (direct + proxies). See console for details.');
+    throw new Error('Fetch failed (direct + proxies).');
   }
 }
 
-// --- UI wiring ---
+/* =========================
+   UI wiring
+   ========================= */
+
 const urlInput = document.getElementById('url');
 const fetchBtn = document.getElementById('fetchBtn');
 const pasteBtn = document.getElementById('pasteBtn');
@@ -215,26 +264,21 @@ const extractFromText = document.getElementById('extractFromText');
 const clearBtn = document.getElementById('clearBtn');
 const list = document.getElementById('list');
 const summary = document.getElementById('summary');
-const resultsTitle = document.getElementById('resultsTitle');
 const useProxiesCheckbox = document.getElementById('useProxies');
 const copyAllBtn = document.getElementById('copyAll');
 const downloadCsvBtn = document.getElementById('downloadCsv');
 
 fetchBtn.addEventListener('click', async () => {
   const url = urlInput.value.trim();
-  if (!url) {
-    alert('Please paste an article URL (or paste the article HTML into the textarea).');
-    return;
-  }
-  summary.textContent = 'Fetching...';
+  if (!url) { alert('Please paste an article URL (or paste the article HTML into the textarea).'); return; }
+  if (!looksLikeHttpUrl(url)) { alert('Please enter a valid http(s) URL.'); return; }
+
+  summary.textContent = 'Fetching…';
   list.innerHTML = '';
   try {
     const useProxies = useProxiesCheckbox.checked;
     const res = await fetchWithFallback(url, useProxies);
-    // When fetching HTML pages, it's nice to extract just the article text; but reliably extracting article body cross-site is complex.
-    // We'll simply run regex on the full HTML (works fine for many news pages). Optionally, user can paste cleaned text.
-    const text = res.text;
-    const ips = extractIpsFromText(text);
+    const ips = extractIpsFromText(res.text);
     displayResults(ips, url, res.source);
   } catch (err) {
     console.error(err);
@@ -249,10 +293,7 @@ pasteBtn.addEventListener('click', () => {
 
 extractFromText.addEventListener('click', () => {
   const text = manualText.value || '';
-  if (!text.trim()) {
-    alert('Paste article HTML or text into the textarea first.');
-    return;
-  }
+  if (!text.trim()) { alert('Paste article HTML or text into the textarea first.'); return; }
   const ips = extractIpsFromText(text);
   displayResults(ips, '(pasted)', 'pasted');
 });
@@ -266,19 +307,24 @@ clearBtn.addEventListener('click', () => {
 
 function displayResults(arr, sourceUrl, sourceLabel) {
   list.innerHTML = '';
+  const src = sourceLabel || sourceUrl || 'unknown';
   if (!arr || arr.length === 0) {
-    summary.textContent = `No IPs found (source: ${sourceLabel || sourceUrl}).`;
+    summary.textContent = `No IPs found (source: ${src}).`;
     return;
   }
-  summary.textContent = `${arr.length} unique IP(s) found (source: ${sourceLabel || sourceUrl}).`;
-  // Build list
+  summary.textContent = `${arr.length} unique IP(s) found (source: ${src}).`;
+
   arr.forEach(item => {
     const card = document.createElement('div');
     card.className = 'ipcard';
 
     const header = document.createElement('div');
     header.className = 'meta';
-    header.innerHTML = `<strong>${item.ip}</strong> — occurrences: ${item.count}`;
+    const strong = document.createElement('strong');
+    strong.textContent = item.ip;
+    header.appendChild(strong);
+    const occ = document.createTextNode(` — occurrences: ${item.count}`);
+    header.appendChild(occ);
 
     const controls = document.createElement('div');
     controls.style.marginTop = '8px';
@@ -287,14 +333,14 @@ function displayResults(arr, sourceUrl, sourceLabel) {
     const copyBtn = document.createElement('button');
     copyBtn.textContent = 'Copy IP';
     copyBtn.className = 'copy-btn';
-    copyBtn.addEventListener('click', () => navigator.clipboard.writeText(item.ip));
+    copyBtn.addEventListener('click', () => navigator.clipboard.writeText(item.ip).catch(() => {}));
 
     const whoisBtn = document.createElement('button');
-    whoisBtn.textContent = 'Lookup (Whois)';
+    whoisBtn.textContent = 'Lookup (IP info)';
     whoisBtn.className = 'copy-btn';
     whoisBtn.addEventListener('click', () => {
-      const wurl = `https://whois.arin.net/rest/ip/${item.ip}`; // opens ARIN whois page (not universal)
-      window.open(`https://ipinfo.io/${item.ip}`, '_blank');
+      // Open both a general info page and (optionally) ARIN if desired
+      window.open(`https://ipinfo.io/${item.ip}`, '_blank', 'noopener');
     });
 
     controls.appendChild(copyBtn);
@@ -303,31 +349,13 @@ function displayResults(arr, sourceUrl, sourceLabel) {
     card.appendChild(header);
     card.appendChild(controls);
 
-    // show up to 3 contexts
+    // Show up to 3 contexts
     const maxCtx = Math.min(3, item.contexts.length);
-    for (let i=0;i<maxCtx;i++) {
+    for (let i = 0; i < maxCtx; i++) {
       const c = item.contexts[i];
       const ctxDiv = document.createElement('div');
       ctxDiv.className = 'context';
-      // Highlight the rawMatch inside the context for visibility (escape HTML)
-      const escaped = escapeHtml(c.contextText);
-      // create a highlighted version by replacing the first occurrence of rawMatch (normalized) with bold
-      const normMatch = escapeHtml(normalizeDefanged(c.rawMatch));
-      // but rawMatch may be obfuscated; try to find either rawMatch or normalized in the escaped context
-      let highlighted = escaped;
-      const idx = indexOfIgnoreSpacingCase(escaped, c.rawMatch);
-      if (idx >= 0) {
-        highlighted = escaped.slice(0, idx) + '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">' + escaped.slice(idx, idx + c.rawMatch.length) + '</mark>' + escaped.slice(idx + c.rawMatch.length);
-      } else {
-        // try normalized
-        const idx2 = escaped.indexOf(normMatch);
-        if (idx2 >= 0) {
-          highlighted = escaped.slice(0, idx2) + '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">' + escaped.slice(idx2, idx2 + normMatch.length) + '</mark>' + escaped.slice(idx2 + normMatch.length);
-        } else {
-          // fallback: wrap the first sequence of digits-looking thing
-          highlighted = escaped.replace(/(\d{1,3}(?:[.\[\]\(\)dot\s]{1,6}\d{1,3}){3})/, '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">$1</mark>');
-        }
-      }
+      const highlighted = highlightMatch(c.contextText, c.rawMatch);
       ctxDiv.innerHTML = highlighted;
       card.appendChild(ctxDiv);
     }
@@ -336,44 +364,71 @@ function displayResults(arr, sourceUrl, sourceLabel) {
   });
 }
 
-// helper: basic HTML escape
+// Escape minimal HTML entities
 function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// helper: case-insensitive indexOf that ignores some spacing differences (very tolerant)
-function indexOfIgnoreSpacingCase(hay, needle) {
-  const h = hay.toLowerCase();
-  const n = needle.toLowerCase().replace(/\s+/g,' ');
-  return h.indexOf(n);
+// Try to highlight the matched IP (handles obfuscated vs normalized)
+function highlightMatch(contextText, rawMatch) {
+  const escaped = escapeHtml(contextText);
+  const normMatch = escapeHtml(normalizeDefanged(rawMatch));
+
+  // Try exact raw
+  const rawEsc = escapeHtml(rawMatch);
+  let idx = escaped.toLowerCase().indexOf(rawEsc.toLowerCase());
+  if (idx >= 0) {
+    return escaped.slice(0, idx) +
+      '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">' +
+      escaped.slice(idx, idx + rawEsc.length) +
+      '</mark>' + escaped.slice(idx + rawEsc.length);
+  }
+
+  // Try normalized
+  idx = escaped.toLowerCase().indexOf(normMatch.toLowerCase());
+  if (idx >= 0) {
+    return escaped.slice(0, idx) +
+      '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">' +
+      escaped.slice(idx, idx + normMatch.length) +
+      '</mark>' + escaped.slice(idx + normMatch.length);
+  }
+
+  // Fallback: highlight first IP-ish sequence
+  return escaped.replace(/(\d{1,3}(?:[.\[\]\(\)\s]*?(?:dot)?[.\[\]\(\)\s]*\d{1,3}){3})/i,
+    '<mark style="background:#ffdede;padding:0 2px;border-radius:3px">$1</mark>');
 }
 
-// copy all ips
+// Copy all IPs (deduped)
 copyAllBtn.addEventListener('click', async () => {
-  const ips = Array.from(document.querySelectorAll('.ipcard > .meta > strong')).map(el => el.textContent.trim());
-  if (ips.length === 0) { alert('No IPs to copy'); return; }
+  const ips = Array.from(document.querySelectorAll('.ipcard > .meta > strong'))
+    .map(el => el.textContent.trim());
+  const unique = Array.from(new Set(ips));
+  if (unique.length === 0) { alert('No IPs to copy'); return; }
   try {
-    await navigator.clipboard.writeText(ips.join('\n'));
-    alert('Copied ' + ips.length + ' IP(s) to clipboard.');
+    await navigator.clipboard.writeText(unique.join('\n'));
+    alert('Copied ' + unique.length + ' IP(s) to clipboard.');
   } catch (err) {
-    alert('Clipboard copy failed. Here are the IPs:\n\n' + ips.join('\n'));
+    alert('Clipboard copy failed. Here are the IPs:\n\n' + unique.join('\n'));
   }
 });
 
-// download CSV
+// Download CSV
 downloadCsvBtn.addEventListener('click', () => {
   const cards = document.querySelectorAll('.ipcard');
   if (cards.length === 0) { alert('No results to download'); return; }
+
   const rows = ['ip,occurrences,contexts'];
-  const arr = Array.from(cards).map(card => {
+  Array.from(cards).forEach(card => {
     const ip = card.querySelector('.meta strong').textContent.trim();
     const occText = card.querySelector('.meta').textContent;
     const occMatch = occText.match(/occurrences:\s*(\d+)/i);
-    const occ = occMatch ? occMatch[1] : '';
-    // contexts concatenated (limit length)
-    const ctxs = Array.from(card.querySelectorAll('.context')).map(c => c.textContent.replace(/\s+/g,' ').trim().slice(0,200)).join(' | ');
-    rows.push(`"${ip}",${occ},"${ctxs.replace(/"/g,'""')}"`);
+    const occ = occMatch ? occMatch[1] : '0';
+    const ctxs = Array.from(card.querySelectorAll('.context'))
+      .map(c => c.textContent.replace(/\s+/g,' ').trim().slice(0,200))
+      .join(' | ');
+    rows.push(`"${ip.replace(/"/g,'""')}",${occ},"${ctxs.replace(/"/g,'""')}"`);
   });
+
   const csv = rows.join('\n');
   const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
@@ -385,10 +440,6 @@ downloadCsvBtn.addEventListener('click', () => {
   a.remove();
   URL.revokeObjectURL(url);
 });
-
-// seed with example (optional)
-// urlInput.value = 'https://example.com/article.html';
-
 </script>
 </body>
 </html>
